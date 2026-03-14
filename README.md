@@ -477,10 +477,10 @@ Building EduStack covers the following DevOps competencies:
 ## Author
 
 **Samson Olanipekun**
-Cloud & DevOps Engineer | Building in public from Abeokuta, Nigeria
+Cloud & DevOps Engineer | Building in public from  Nigeria
 
 - GitHub: [github.com/Reich-imperial](https://github.com/Reich-imperial)
-- LinkedIn: [linkedin.com/in/samson-olanipekun](https://linkedin.com/in/samson-olanipekun)
+- LinkedIn: [linkedin.com/in/samson-olanipekun](https://linkedin.com/in/samson-olanipekun-devops)
 - Open to: Remote DevOps internships and junior roles
 
 ---
