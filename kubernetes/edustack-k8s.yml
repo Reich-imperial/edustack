@@ -1,0 +1,357 @@
+# ============================================================
+# EduStack — Kubernetes Manifests
+# Deploys the full 5-tier stack to a Kubernetes cluster
+# Apply: kubectl apply -f kubernetes/
+# Author: Samson Olanipekun (github.com/Reich-imperial)
+# ============================================================
+
+---
+# ── Namespace ─────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: edustack
+  labels:
+    project: edustack
+    owner: samson-olanipekun
+
+---
+# ── ConfigMap — app settings ──────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: edustack-config
+  namespace: edustack
+data:
+  DB_HOST:          "edustack-db-svc"
+  DB_PORT:          "3306"
+  DB_NAME:          "edustack"
+  MEMCACHED_HOST:   "edustack-cache-svc"
+  MEMCACHED_PORT:   "11211"
+  RABBITMQ_HOST:    "edustack-mq-svc"
+  RABBITMQ_PORT:    "5672"
+  RABBITMQ_USER:    "edustack"
+
+---
+# ── Secret — credentials (base64 encoded in real deployment) ──
+apiVersion: v1
+kind: Secret
+metadata:
+  name: edustack-secrets
+  namespace: edustack
+type: Opaque
+stringData:
+  DB_USER:       "eduadmin"
+  DB_PASS:       "eduAdmin@2026"
+  RABBITMQ_PASS: "edustack@2026"
+
+---
+# ── MySQL Deployment ──────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edustack-db
+  namespace: edustack
+  labels:
+    app: edustack-db
+    tier: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edustack-db
+  template:
+    metadata:
+      labels:
+        app: edustack-db
+        tier: database
+    spec:
+      containers:
+        - name: mysql
+          image: reich-imperial/edustack-db:latest
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: edustack-secrets
+                  key: DB_PASS
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: edustack-config
+                  key: DB_NAME
+          volumeMounts:
+            - name: db-storage
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: db-storage
+          persistentVolumeClaim:
+            claimName: edustack-db-pvc
+
+---
+# ── MySQL PVC ─────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: edustack-db-pvc
+  namespace: edustack
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# ── MySQL Service ─────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: edustack-db-svc
+  namespace: edustack
+spec:
+  selector:
+    app: edustack-db
+  ports:
+    - port: 3306
+      targetPort: 3306
+  clusterIP: None   # Headless service for stable DNS
+
+---
+# ── Memcached Deployment ──────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edustack-cache
+  namespace: edustack
+  labels:
+    app: edustack-cache
+    tier: cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edustack-cache
+  template:
+    metadata:
+      labels:
+        app: edustack-cache
+    spec:
+      containers:
+        - name: memcached
+          image: memcached:1.6-alpine
+          ports:
+            - containerPort: 11211
+          resources:
+            limits:
+              memory: "128Mi"
+              cpu:    "250m"
+
+---
+# ── Memcached Service ─────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: edustack-cache-svc
+  namespace: edustack
+spec:
+  selector:
+    app: edustack-cache
+  ports:
+    - port: 11211
+      targetPort: 11211
+
+---
+# ── RabbitMQ Deployment ───────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edustack-mq
+  namespace: edustack
+  labels:
+    app: edustack-mq
+    tier: messaging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edustack-mq
+  template:
+    metadata:
+      labels:
+        app: edustack-mq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.12-management-alpine
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: edustack-config
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: edustack-secrets
+                  key: RABBITMQ_PASS
+
+---
+# ── RabbitMQ Service ──────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: edustack-mq-svc
+  namespace: edustack
+spec:
+  selector:
+    app: edustack-mq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+
+---
+# ── Tomcat App Deployment ─────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edustack-app
+  namespace: edustack
+  labels:
+    app: edustack-app
+    tier: application
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: edustack-app
+  template:
+    metadata:
+      labels:
+        app: edustack-app
+        tier: application
+    spec:
+      containers:
+        - name: tomcat
+          image: reich-imperial/edustack-app:latest
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: edustack-config
+            - secretRef:
+                name: edustack-secrets
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu:    "250m"
+            limits:
+              memory: "1Gi"
+              cpu:    "500m"
+
+---
+# ── App Service ───────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: edustack-app-svc
+  namespace: edustack
+spec:
+  selector:
+    app: edustack-app
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+# ── Nginx Deployment ──────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edustack-web
+  namespace: edustack
+  labels:
+    app: edustack-web
+    tier: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: edustack-web
+  template:
+    metadata:
+      labels:
+        app: edustack-web
+        tier: web
+    spec:
+      containers:
+        - name: nginx
+          image: reich-imperial/edustack-web:latest
+          ports:
+            - containerPort: 80
+          resources:
+            limits:
+              memory: "128Mi"
+              cpu:    "100m"
+
+---
+# ── Nginx LoadBalancer Service ────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: edustack-web-svc
+  namespace: edustack
+spec:
+  type: LoadBalancer
+  selector:
+    app: edustack-web
+  ports:
+    - port: 80
+      targetPort: 80
+
+---
+# ── Horizontal Pod Autoscaler for app tier ────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: edustack-app-hpa
+  namespace: edustack
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: edustack-app
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

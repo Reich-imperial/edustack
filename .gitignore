@@ -1,0 +1,25 @@
+# Vagrant VM files — never push these
+.vagrant/
+*.log
+
+# Java build artifacts
+target/
+*.war
+*.jar
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Secrets
+.env
+*.pem
+*.key
+application-prod.properties
+
+# Windows
+Thumbs.db
+desktop.ini

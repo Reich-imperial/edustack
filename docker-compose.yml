@@ -1,0 +1,105 @@
+# ============================================================
+# EduStack — Docker Compose
+# Containerised version of the full multi-tier stack
+# Usage: docker compose up -d
+# Author: Samson Olanipekun (github.com/Reich-imperial)
+# ============================================================
+
+version: '3.8'
+
+services:
+
+  # ── MySQL Database ──────────────────────────────────────────
+  edustack-db:
+    build:
+      context: ./Docker-files/db
+    image: reich-imperial/edustack-db:latest
+    container_name: edustack-db
+    environment:
+      MYSQL_ROOT_PASSWORD: eduAdmin@2026
+      MYSQL_DATABASE: edustack
+      MYSQL_USER: eduadmin
+      MYSQL_PASSWORD: eduAdmin@2026
+    volumes:
+      - edustack-db-data:/var/lib/mysql
+    networks:
+      - edustack-backend
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── Memcached Cache ─────────────────────────────────────────
+  edustack-cache:
+    image: memcached:1.6-alpine
+    container_name: edustack-cache
+    ports:
+      - "11211:11211"
+    networks:
+      - edustack-backend
+
+  # ── RabbitMQ Message Broker ─────────────────────────────────
+  edustack-mq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: edustack-mq
+    environment:
+      RABBITMQ_DEFAULT_USER: edustack
+      RABBITMQ_DEFAULT_PASS: edustack@2026
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI: http://localhost:15672
+    networks:
+      - edustack-backend
+
+  # ── Tomcat Application Server ───────────────────────────────
+  edustack-app:
+    build:
+      context: ./Docker-files/app
+    image: reich-imperial/edustack-app:latest
+    container_name: edustack-app
+    environment:
+      - DB_HOST=edustack-db
+      - DB_PORT=3306
+      - DB_NAME=edustack
+      - DB_USER=eduadmin
+      - DB_PASS=eduAdmin@2026
+      - MEMCACHED_HOST=edustack-cache
+      - MEMCACHED_PORT=11211
+      - RABBITMQ_HOST=edustack-mq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=edustack
+      - RABBITMQ_PASS=edustack@2026
+    depends_on:
+      edustack-db:
+        condition: service_healthy
+      edustack-cache:
+        condition: service_started
+      edustack-mq:
+        condition: service_started
+    networks:
+      - edustack-backend
+      - edustack-frontend
+
+  # ── Nginx Reverse Proxy ─────────────────────────────────────
+  edustack-web:
+    build:
+      context: ./Docker-files/web
+    image: reich-imperial/edustack-web:latest
+    container_name: edustack-web
+    ports:
+      - "80:80"
+    depends_on:
+      - edustack-app
+    networks:
+      - edustack-frontend
+
+volumes:
+  edustack-db-data:
+    driver: local
+
+networks:
+  edustack-backend:
+    driver: bridge
+  edustack-frontend:
+    driver: bridge

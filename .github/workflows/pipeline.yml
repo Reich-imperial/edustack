@@ -1,0 +1,209 @@
+name: EduStack CI/CD Pipeline
+
+# ============================================================
+# EduStack — GitHub Actions Pipeline
+# Author: Samson Olanipekun (github.com/Reich-imperial)
+# Stages: Secret scan → Code scan → Build → Container scan
+#         → Push to ECR → Deploy to EC2
+# ============================================================
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION:   us-east-1
+  ECR_REPO:     edustack
+  IMAGE_TAG:    ${{ github.sha }}
+
+jobs:
+
+  # ── 1. Secret Detection ──────────────────────────────────────
+  secret-scan:
+    name: Secret Detection (GitLeaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run GitLeaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 2. Code & Dependency Security Scan ──────────────────────
+  code-scan:
+    name: Dependency Scan (Snyk)
+    runs-on: ubuntu-latest
+    needs: secret-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Snyk Maven scan
+        uses: snyk/actions/maven@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --sarif-file-output=snyk.sarif
+
+      - name: Upload Snyk results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk.sarif
+
+  # ── 3. Build & Unit Tests ────────────────────────────────────
+  build:
+    name: Maven Build & Test
+    runs-on: ubuntu-latest
+    needs: code-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests=false
+
+      - name: Upload WAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EduStack-war
+          path: target/EduStack.war
+          retention-days: 5
+
+  # ── 4. Docker Build + Container Security Scan ───────────────
+  docker-build:
+    name: Docker Build + Trivy Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t edustack:${{ env.IMAGE_TAG }} \
+            -f Docker-files/app/Dockerfile .
+
+      - name: Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: edustack:${{ env.IMAGE_TAG }}
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy.sarif
+
+  # ── 5. Push to Amazon ECR ────────────────────────────────────
+  push-ecr:
+    name: Push to Amazon ECR
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image-uri: ${{ steps.push.outputs.image-uri }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/edustack-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag and push image
+        id: push
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE_URI=$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+          docker build -f Docker-files/app/Dockerfile -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+  # ── 6. Deploy to EC2 ─────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: push-ecr
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: SSH deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            IMAGE_URI="${{ needs.push-ecr.outputs.image-uri }}"
+            REGION="${{ env.AWS_REGION }}"
+
+            echo "Logging into ECR..."
+            aws ecr get-login-password --region $REGION | \
+              docker login --username AWS \
+              --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$REGION.amazonaws.com
+
+            echo "Pulling new EduStack image..."
+            docker pull $IMAGE_URI
+
+            echo "Stopping old container..."
+            docker stop edustack-app 2>/dev/null || true
+            docker rm   edustack-app 2>/dev/null || true
+
+            echo "Starting new container..."
+            docker run -d \
+              --name edustack-app \
+              --restart always \
+              -p 8080:8080 \
+              -e DB_HOST=${{ secrets.DB_HOST }} \
+              -e DB_PASS=${{ secrets.DB_PASS }} \
+              -e RABBITMQ_HOST=${{ secrets.RMQ_HOST }} \
+              -e MEMCACHED_HOST=${{ secrets.MC_HOST }} \
+              $IMAGE_URI
+
+            echo "Deployment complete. Verifying health..."
+            sleep 10
+            curl -sf http://localhost:8080/ || echo "Warning: health check failed"
+
+      - name: Notify deployment
+        if: always()
+        run: |
+          echo "EduStack deployed: ${{ needs.push-ecr.outputs.image-uri }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Author: ${{ github.actor }}"
