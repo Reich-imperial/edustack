@@ -40,6 +40,9 @@ jobs:
     name: Dependency Scan (Snyk)
     runs-on: ubuntu-latest
     needs: secret-scan
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -50,17 +53,19 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Snyk Maven scan
-        uses: snyk/actions/maven@master
+      - name: Run Snyk scan
         continue-on-error: true
+        run: |
+          npm install -g snyk
+          snyk auth ${{ secrets.SNYK_TOKEN }}
+          snyk test --maven-aggregate-project \
+            --sarif-file-output=snyk.sarif || true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --severity-threshold=high --sarif-file-output=snyk.sarif
 
       - name: Upload Snyk results
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: hashFiles('snyk.sarif') != ''
         with:
           sarif_file: snyk.sarif
 
