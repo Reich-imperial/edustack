@@ -34,7 +34,7 @@ sudo mysql -u root -p"$DATABASE_PASS" -e "FLUSH PRIVILEGES;"
 
 echo ">>> [db01] Loading EduStack schema and seed data..."
 sudo git clone -b main https://github.com/Reich-imperial/edustack.git /tmp/edustack
-sudo mysql -u root -p"$DATABASE_PASS" edustack < /tmp/edustack/src/main/resources/db_setup.sql
+sudo mysql -u root -p"$DATABASE_PASS" edustack < /tmp/edustack/src/main/resources/db_backup.sql
 
 echo ">>> [db01] Opening firewall for MySQL port 3306..."
 sudo systemctl start firewalld
