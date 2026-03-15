@@ -124,13 +124,15 @@ vagrant up
 # Verify all VMs are running
 vagrant status
 ```
+> **Note:** After `vagrant up` completes, if the app returns 404 or login
+> fails, refer to the Troubleshooting section below. The most common issues
+> are the Elasticsearch placeholder and database schema — both are documented
+> with exact fixes.
 
 Open your browser at: **http://192.168.56.11**
 
 Login with demo credentials:
-- **Student:** `samson.o` / `EduStack@2026`
-- **Admin:** `admin_vp` / `EduStack@2026`
-- **Lecturer:** `dr.adeyemi` / `EduStack@2026`
+- **Admin:** `admin_vp` / `admin_vp`
 
 ---
 
@@ -351,7 +353,10 @@ git push → GitHub Actions
              │ grade            │     │ author_id (FK)     │
              └──────────────────┘     └────────────────────┘
 ```
-
+> **Important:** The Java application was written for the original vprofile
+> schema in `db_backup.sql`. The custom EduStack schema in `db_setup.sql`
+> is included for reference and future development but the app currently
+> runs on `db_backup.sql`.
 ---
 
 ## Project Structure
@@ -416,39 +421,59 @@ edustack/
 
 ## Troubleshooting
 
-**App01 can't connect to db01**
+### Maven build fails with "Java heap space"
+Maven runs out of memory on VMs with limited RAM. Fix it before building:
 ```bash
-# Verify db01 is reachable from app01
-vagrant ssh app01
-ping db01
-
-# Check MySQL is accepting remote connections
-vagrant ssh db01
-sudo mysql -u root -p -e "SHOW GRANTS FOR 'eduadmin'@'app01';"
+export MAVEN_OPTS="-Xmx512m -Xms256m"
+mvn install -DskipTests
 ```
 
-**Memcached connection refused**
+### Permission denied on target/ folder
+A previous failed build left files owned by root. Fix ownership first:
 ```bash
-vagrant ssh mc01
-# Confirm it's bound to 0.0.0.0 not 127.0.0.1
-sudo ss -tlnp | grep 11211
+sudo chown -R vagrant:vagrant /tmp/edustack
+```
+Then run Maven again.
+
+### Tomcat starts but app returns 404
+The WAR deployed but ROOT folder wasn't replaced. Run:
+```bash
+sudo systemctl stop tomcat
+sudo rm -rf /usr/local/tomcat/webapps/ROOT
+sudo systemctl start tomcat
 ```
 
-**Tomcat not starting**
+### "Could not resolve placeholder 'elasticsearch.host'"
+The application.properties is missing Elasticsearch config. Add it:
 ```bash
-vagrant ssh app01
-sudo journalctl -u tomcat -n 50
-sudo tail -f /usr/local/tomcat/logs/catalina.out
+sudo su
+cat >> /usr/local/tomcat/webapps/ROOT/WEB-INF/classes/application.properties << 'EOF'
+
+#Elasticsearch Configuration
+elasticsearch.host=localhost
+elasticsearch.port=9300
+elasticsearch.cluster=vprofile
+elasticsearch.node=vprofilenode
+EOF
+sudo systemctl restart tomcat
 ```
 
-**Nginx returns 502 Bad Gateway**
+### Login returns "user not found"
+The app uses the original vprofile database schema. Make sure
+db_backup.sql is loaded, not db_setup.sql:
 ```bash
-# 502 means Nginx can't reach Tomcat — check app01 is up
-vagrant ssh web01
-curl http://app01:8080/
+# On db01
+sudo mysql -u root -peduAdmin@2026 -e \
+  'DROP DATABASE edustack; CREATE DATABASE edustack;'
+sudo mysql -u root -peduAdmin@2026 edustack < /tmp/db_backup.sql
+```
+Then restart Tomcat on app01.
 
-# Check Nginx error log
-sudo tail -f /var/log/nginx/error.log
+### Memcached shows inactive in health check
+Restart it manually:
+```bash
+vagrant ssh mc01 -c "sudo systemctl restart memcached"
+```     
 ```
 
 ---
