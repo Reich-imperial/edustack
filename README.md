@@ -7,7 +7,7 @@
 [![Security: Snyk](https://img.shields.io/badge/security-snyk-4C4A73.svg)](https://snyk.io)
 [![Security: Trivy](https://img.shields.io/badge/container-trivy-1904DA.svg)](https://trivy.dev)
 
-> A production-grade, multi-tier web application simulating a university student portal — built to demonstrate end-to-end DevOps engineering skills across five deployment stages.
+> A production-grade, multi-tier web application simulating a university student portal — built to demonstrate end-to-end DevOps engineering skills across five deployment stages..
 
 ---
 
